@@ -114,24 +114,24 @@ docker-compose up --build
 
 W grze Kalambury punkty przyznawane są zarówno graczom odgadującym hasło, jak i osobie je pokazującej / rysującej.
 
-# Zasady przyznawania punktów
+## Zasady przyznawania punktów
 Poprawne odgadnięcie hasła:
 Każdy gracz lub drużyna, która odgadnie hasło w czasie rundy, otrzymuje 1 punkt.
 
-# Bonusy dla osoby pokazującej / rysującej:
+## Bonusy dla osoby pokazującej / rysującej:
 Gracz pokazujący hasło otrzymuje 1 punkt, jeśli jego hasło zostało poprawnie odgadnięte przez innych.
 
-# Dodatkowy bonus punktowy za szybkość: jeśli hasło zostanie odgadnięte w pierwszej połowie czasu rundy → +1 punkt dla odgadującego i +1 punkt dla pokazującego.
+## Dodatkowy bonus punktowy za szybkość: jeśli hasło zostanie odgadnięte w pierwszej połowie czasu rundy → +1 punkt dla odgadującego i +1 punkt dla pokazującego.
 
-# Niepoprawne lub nieodgadnięte hasło:
+## Niepoprawne lub nieodgadnięte hasło:
 W przypadku gdy nikt nie odgadnie hasła w czasie rundy, punkty nie są przyznawane.
 
-# Statystyki gracza
+## Statystyki gracza
 W aplikacji można śledzić dla każdego gracza:
-Punkty zdobyte
-Liczbę odgadniętych haseł
-Liczbę rund rozegranych jako pokazujący
-Wygrane rundy i miejsca na podium
+* Punkty zdobyte
+* Liczbę odgadniętych haseł
+* Liczbę rund rozegranych jako pokazujący
+* Wygrane rundy i miejsca na podium
 
 Dzięki temu systemowi punktowania każdy gracz jest motywowany zarówno do kreatywnego pokazywania, jak i aktywnego odgadywania haseł.
 
