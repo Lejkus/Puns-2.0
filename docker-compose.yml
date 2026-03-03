@@ -1,0 +1,12 @@
+services:
+  mongodb:
+    image: mongo:latest
+    command: ["--replSet", "rs0", "--bind_ip_all"] # DODAJ TO
+    container_name: puns-db
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:
