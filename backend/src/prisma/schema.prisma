@@ -1,0 +1,28 @@
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  email     String   @unique
+  nickname  String   @unique
+  password  String
+  points    Int      @default(0)
+  gamesPlayed Int    @default(0)
+  wins      Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model GameSession {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomCode  String   @unique
+  isActive  Boolean  @default(true)
+  players   String[] // Lista ID graczy
+  history   Json?    // Tu możesz zapisać finalny obrazek jako tablicę bajtów
+  createdAt DateTime @default(now())
+}
