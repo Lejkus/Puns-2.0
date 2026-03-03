@@ -14,6 +14,8 @@ Puns Game App to interaktywna gra wieloosobowa oparta na planszy, gdzie gracze r
 * **React Router v6** – routing i nawigacja między stronami.
 * **Tailwind CSS / SCSS** – nowoczesny system stylów z modularnymi klasami.
 * **react-konva** – do planszy umożliwiającej rysowanie „drag-to-paint” zamiast pojedynczych divów.
+* shadcn/ui – biblioteka komponentów UI oparta na Radix UI i Tailwind CSS, zapewniająca nowoczesny, minimalistyczny wygląd aplikacji.
+* Lucide React – zestaw spójnych ikon wektorowych.
 
 ### Backend
 
