@@ -18,8 +18,7 @@ const COLORS = [
    { name: "Eraser", value: "#ffffff" }, // Gumka to po prostu biały kolor
 ];
 
-export default function GameCanvas() {
-   const [socket, setSocket] = useState<Socket | null>(null);
+export default function GameCanvas({ socket, roomId }: { socket: Socket | null, roomId: string }) {
 
    // Trzymamy pokolorowane piksele jako obiekt: { "indeks": "kolor" }
    // To o wiele szybsze niż przeszukiwanie tablicy!
@@ -30,53 +29,35 @@ export default function GameCanvas() {
 
    const clearCanvas = () => {
       setPixels({});
-      socket?.emit("clear"); // Poinformuj serwer
-   };
+      // Dodajemy roomId do wysyłanej wiadomości!
+      socket?.emit("clear", { roomId: roomId }); 
+    };
 
    const [role, setRole] = useState<"painter" | "guesser">("guesser");
    const [word, setWord] = useState<string | null>(null);
 
    useEffect(() => {
       if (!socket) return;
-
-      socket.on(
-         "roleAssign",
-         (data: { role: "painter" | "guesser"; word: string | null }) => {
-            setRole(data.role);
-            setWord(data.word);
-         }
-      );
-
+  
+      // 🔥 ODBIERAMY CAŁY STAN PO F5 LUB DOŁĄCZENIU
+      socket.on("canvasInit", (initialState: Record<number, string>) => {
+        setPixels(initialState);
+      });
+  
+      socket.on("drawUpdate", (data: { index: number; color: string }) => {
+        setPixels((prev) => ({ ...prev, [data.index]: data.color }));
+      });
+      
+      socket.on("clearCanvas", () => setPixels({}));
+  
       return () => {
-         socket.off("roleAssign");
+        socket.off("canvasInit"); // Pamiętaj o sprzątaniu
+        socket.off("drawUpdate");
+        socket.off("clearCanvas");
       };
-   }, [socket]);
+    }, [socket]);
 
-   useEffect(() => {
-      // 1. Setup Socket.io - Łączymy się z serwerem
-      const newSocket = io("http://localhost:3000");
-      setSocket(newSocket);
-
-      newSocket.on("connect", () => {
-         console.log("🔌 Socket podłączony! ID:", newSocket.id);
-      });
-
-      // 2. Odbieranie pikseli od innych graczy
-      newSocket.on("drawUpdate", (data: { index: number; color: string }) => {
-         setPixels((prev) => ({ ...prev, [data.index]: data.color }));
-      });
-
-      // NASŁUCHIWANIE NA CZYSZCZENIE
-      newSocket.on("clearCanvas", () => {
-         console.log("🧼 Serwer nakazał wyczyścić płótno!");
-         setPixels({}); // To czyści tablicę u każdego gracza
-      });
-
-      return () => {
-         newSocket.off("clearCanvas"); // Ważne: wyłączamy nasłuch przy wychodzeniu
-         newSocket.disconnect();
-      };
-   }, []);
+   
 
    // 3. Mechanika Drag-to-Paint
    const handlePaint = (e: any) => {
@@ -105,7 +86,7 @@ export default function GameCanvas() {
       setPixels((prev) => ({ ...prev, [index]: currentColor }));
 
       // Wysyłamy informację na serwer
-      socket.emit("draw", { index, color: currentColor });
+      socket.emit("draw", { index, color: currentColor, roomId: roomId });
    };
 
    return (
