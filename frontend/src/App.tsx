@@ -10,10 +10,11 @@ import { useEffect, useState } from "react";
 import { io, Socket } from "socket.io-client";
 
 function App() {
-  const { user, isAuthenticated, logout } = useAuthStore();
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const [currentRoom, setCurrentRoom] = useState<string | null>(null);
-
+   const { user, isAuthenticated, logout } = useAuthStore();
+   const [socket, setSocket] = useState<Socket | null>(null);
+   const [currentRoom, setCurrentRoom] = useState<string | null>(null);
+   const [players, setPlayers] = useState<any[]>([]);
+   const [isHost, setIsHost] = useState(false);
 
    useEffect(() => {
       if (isAuthenticated) {
@@ -40,20 +41,48 @@ function App() {
       }
    }, [isAuthenticated]);
 
-// Funkcja odpalana, gdy gracz kliknie w Lobby
-const handleJoinRoom = (roomId: string, password?: string) => {
-  if (!socket) return;
-  
-  // Wysyłamy prośbę, ale NIE ustawiamy jeszcze setCurrentRoom.
-  // Czekamy na event "joinSuccess" z useEffecta powyżej.
-  socket.emit("joinRoom", { roomId, password });
-};
+   useEffect(() => {
+      if (socket) {
+         socket.on(
+            "joinSuccess",
+            (data: { roomId: string; isHost: boolean }) => {
+               setCurrentRoom(data.roomId);
+               setIsHost(data.isHost); // Zapisujemy czy jesteśmy liderem
+            }
+         );
 
-const handleLeaveRoom = () => {
-  // Opcjonalnie: poinformuj serwer, że wychodzisz
-  // socket?.emit("leaveRoom", { roomId: currentRoom });
-  setCurrentRoom(null);
-};
+         socket.on("playersUpdate", (updatedPlayers: any[]) => {
+            setPlayers(updatedPlayers);
+            // Sprawdzamy czy nadal jesteśmy hostem (np. po migracji hosta)
+            const me = updatedPlayers.find((p) => p.id === socket.id);
+            if (me) setIsHost(me.isHost);
+         });
+
+         socket.on("gameStarted", () => {
+            // Tutaj przełączymy widok z Lobby-poczekalni na grę właściwą
+            console.log("STARTUJEMY!");
+         });
+      }
+   }, [socket]);
+
+   
+   // Funkcja odpalana, gdy gracz kliknie w Lobby
+   const handleJoinRoom = (roomId: string, password?: string) => {
+      if (!user) return; // Jeśli nie ma usera, nie wpuszczamy
+
+      socket?.emit("joinRoom", {
+         roomId,
+         password,
+         nickname: user.nickname,
+         userId: user.id, // <--- TO JEST KLUCZOWE
+      });
+   };
+
+   const handleLeaveRoom = () => {
+      // Opcjonalnie: poinformuj serwer, że wychodzisz
+      // socket?.emit("leaveRoom", { roomId: currentRoom });
+      setCurrentRoom(null);
+   };
 
    return (
       <BrowserRouter>
@@ -125,6 +154,8 @@ const handleLeaveRoom = () => {
                                  <GameCanvas
                                     socket={socket}
                                     roomId={currentRoom}
+                                    players={players}
+                                    isHost={isHost}
                                  />
                                  <Chat
                                     socket={socket}
