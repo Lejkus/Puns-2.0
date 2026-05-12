@@ -18,11 +18,10 @@ model User {
   createdAt DateTime @default(now())
 }
 
-model GameSession {
+model Room {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
-  roomCode  String   @unique
-  isActive  Boolean  @default(true)
-  players   String[] // Lista ID graczy
-  history   Json?    // Tu możesz zapisać finalny obrazek jako tablicę bajtów
+  name      String   @unique
+  password  String?
+  status   String  @default("LOBBY") // Dodajemy to: LOBBY lub IN_GAME
   createdAt DateTime @default(now())
 }

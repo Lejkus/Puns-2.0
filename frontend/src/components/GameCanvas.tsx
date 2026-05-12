@@ -1,11 +1,10 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { Stage, Layer, Rect } from "react-konva";
-import { io, Socket } from "socket.io-client";
+import { Socket } from "socket.io-client";
 
-// Ustawienia naszego Pixel Engine
-const CANVAS_SIZE = 400; // Rozmiar płótna 400x400
-const PIXEL_SIZE = 10; // Rozmiar jednego "piksela"
-const GRID_WIDTH = CANVAS_SIZE / PIXEL_SIZE; // Mamy siatkę 40x40 pikseli
+const CANVAS_SIZE = 400;
+const PIXEL_SIZE = 10;
+const GRID_WIDTH = CANVAS_SIZE / PIXEL_SIZE;
 
 const COLORS = [
    { name: "Red", value: "#ef4444" },
@@ -15,88 +14,96 @@ const COLORS = [
    { name: "Blue", value: "#3b82f6" },
    { name: "Purple", value: "#a855f7" },
    { name: "Black", value: "#000000" },
-   { name: "Eraser", value: "#ffffff" }, // Gumka to po prostu biały kolor
+   { name: "Eraser", value: "#ffffff" },
 ];
 
-export default function GameCanvas({ socket, roomId }: { socket: Socket | null, roomId: string }) {
+interface GameCanvasProps {
+  socket: Socket | null;
+  roomId: string;
+}
 
-   // Trzymamy pokolorowane piksele jako obiekt: { "indeks": "kolor" }
-   // To o wiele szybsze niż przeszukiwanie tablicy!
+export default function GameCanvas({ socket, roomId }: GameCanvasProps) {
    const [pixels, setPixels] = useState<Record<number, string>>({});
-
-   const isDrawing = useRef(false);
    const [currentColor, setCurrentColor] = useState("#ef4444");
+   const isDrawing = useRef(false);
 
-   const clearCanvas = () => {
-      setPixels({});
-      // Dodajemy roomId do wysyłanej wiadomości!
-      socket?.emit("clear", { roomId: roomId }); 
-    };
-
-   const [role, setRole] = useState<"painter" | "guesser">("guesser");
-   const [word, setWord] = useState<string | null>(null);
+   // --- SYNCHRONIZACJA ---
 
    useEffect(() => {
       if (!socket) return;
-  
-      // 🔥 ODBIERAMY CAŁY STAN PO F5 LUB DOŁĄCZENIU
-      socket.on("canvasInit", (initialState: Record<number, string>) => {
-        setPixels(initialState);
-      });
-  
+
+      // Kiedy ktoś inny rysuje
       socket.on("drawUpdate", (data: { index: number; color: string }) => {
-        setPixels((prev) => ({ ...prev, [data.index]: data.color }));
+         setPixels((prev) => ({ ...prev, [data.index]: data.color }));
       });
-      
-      socket.on("clearCanvas", () => setPixels({}));
-  
+
+      // Kiedy wchodzimy do pokoju i pobieramy stan początkowy
+      socket.on("canvasInit", (state: Record<number, string>) => {
+         setPixels(state || {});
+      });
+
+      // Kiedy ktoś wyczyści planszę
+      socket.on("clearCanvas", () => {
+         setPixels({});
+      });
+
       return () => {
-        socket.off("canvasInit"); // Pamiętaj o sprzątaniu
-        socket.off("drawUpdate");
-        socket.off("clearCanvas");
+         socket.off("drawUpdate");
+         socket.off("canvasInit");
+         socket.off("clearCanvas");
       };
-    }, [socket]);
+   }, [socket]);
 
-   
+   // --- LOGIKA RYSOWANIA ---
 
-   // 3. Mechanika Drag-to-Paint
+   const drawPixel = useCallback((index: number, color: string) => {
+      setPixels((prev) => {
+         // Nie aktualizuj, jeśli kolor jest ten sam (optymalizacja)
+         if (prev[index] === color) return prev;
+         return { ...prev, [index]: color };
+      });
+
+      // Wysyłamy tylko to, co niezbędne. Serwer sam wie, jaki to roomId.
+      socket?.emit("draw", { index, color });
+   }, [socket]);
+
    const handlePaint = (e: any) => {
       if (!isDrawing.current || !socket) return;
 
-      // Pobieramy dokładną pozycję myszki z biblioteki Konva
       const stage = e.target.getStage();
       const point = stage.getPointerPosition();
       if (!point) return;
 
-      // Obliczamy w którym "kwadraciku" (grid) jesteśmy
       const gridX = Math.floor(point.x / PIXEL_SIZE);
       const gridY = Math.floor(point.y / PIXEL_SIZE);
 
-      // Zabezpieczenie przed wyjściem za ramy
-      if (gridX < 0 || gridX >= GRID_WIDTH || gridY < 0 || gridY >= GRID_WIDTH)
-         return;
+      if (gridX >= 0 && gridX < GRID_WIDTH && gridY >= 0 && gridY < GRID_WIDTH) {
+         const index = gridY * GRID_WIDTH + gridX;
+         drawPixel(index, currentColor);
+      }
+   };
 
-      // TWOJA MECHANIKA: Przeliczanie pozycji na jeden indeks w tablicy
-      const index = gridY * GRID_WIDTH + gridX;
-
-      // Optymalizacja: jeśli piksel jest już w tym kolorze, ignoruj (oszczędza transfer)
-      if (pixels[index] === currentColor) return;
-
-      // Aktualizujemy płótno u siebie
-      setPixels((prev) => ({ ...prev, [index]: currentColor }));
-
-      // Wysyłamy informację na serwer
-      socket.emit("draw", { index, color: currentColor, roomId: roomId });
+   const clearCanvas = () => {
+      setPixels({});
+      socket?.emit("clear"); // Krótki sygnał do serwera
    };
 
    return (
-      <div className="flex flex-col items-center gap-6 mt-8">
-         {/* 1. PŁÓTNO (Twoje bez zmian, dodałem tylko delikatny cień - shadow) */}
-         <div className="bg-slate-800 p-2 rounded-xl shadow-[0_0_50px_-12px_rgba(79,70,229,0.3)] border border-slate-700">
+      <div className="flex flex-col items-center gap-6">
+         {/* STATUS POKOJU */}
+         <div className="flex items-center gap-3 bg-slate-900 px-4 py-2 rounded-full border border-slate-800">
+            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-xs font-medium text-slate-400 uppercase tracking-widest">
+               Live: {roomId}
+            </span>
+         </div>
+
+         {/* PŁÓTNO */}
+         <div className="bg-slate-800 p-3 rounded-2xl shadow-2xl border border-slate-700">
             <Stage
                width={CANVAS_SIZE}
                height={CANVAS_SIZE}
-               className="bg-white cursor-crosshair rounded-lg overflow-hidden"
+               className="bg-white cursor-crosshair rounded-lg overflow-hidden shadow-inner"
                onMouseDown={(e) => {
                   isDrawing.current = true;
                   handlePaint(e);
@@ -119,7 +126,7 @@ export default function GameCanvas({ socket, roomId }: { socket: Socket | null, 
                            width={PIXEL_SIZE}
                            height={PIXEL_SIZE}
                            fill={color}
-                           listening={false}
+                           listening={false} // Bardzo ważne dla wydajności!
                         />
                      );
                   })}
@@ -127,51 +134,37 @@ export default function GameCanvas({ socket, roomId }: { socket: Socket | null, 
             </Stage>
          </div>
 
-         {/* 2. NOWOŚĆ: TOOLBAR (Paleta kolorów i przycisk czyszczenia) */}
+         {/* TOOLBAR */}
          <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex items-center gap-6 shadow-xl">
-            {/* Przyciski z kolorami */}
             <div className="flex gap-2">
                {COLORS.map((color) => (
                   <button
                      key={color.value}
                      onClick={() => setCurrentColor(color.value)}
-                     className={`w-8 h-8 rounded-full border-2 transition-all hover:scale-110 flex items-center justify-center ${
+                     className={`w-9 h-9 rounded-xl border-2 transition-all flex items-center justify-center ${
                         currentColor === color.value
-                           ? "border-indigo-500 scale-125"
-                           : "border-transparent"
+                           ? "border-indigo-500 scale-110 shadow-[0_0_15px_rgba(79,70,229,0.4)]"
+                           : "border-transparent hover:border-slate-700"
                      }`}
                      style={{
-                        backgroundColor:
-                           color.value === "#ffffff" ? "#f1f5f9" : color.value,
+                        backgroundColor: color.value,
+                        boxShadow: currentColor === color.value ? `0 0 10px ${color.value}44` : 'none'
                      }}
-                     title={color.name}
                   >
-                     {/* Ikonka dla gumki */}
-                     {color.name === "Eraser" && (
-                        <span className="text-sm">🧼</span>
-                     )}
+                     {color.name === "Eraser" && <span className="text-lg">🧼</span>}
                   </button>
                ))}
             </div>
 
-            {/* Pionowa linia oddzielająca */}
-            <div className="w-[1px] h-8 bg-slate-700" />
+            <div className="w-[1px] h-8 bg-slate-800" />
 
-            {/* Przycisk Wyczyść */}
             <button
                onClick={clearCanvas}
-               className="px-4 py-2 text-sm font-medium text-white bg-slate-800 border border-slate-700 rounded-md hover:bg-red-900/40 hover:text-red-400 hover:border-red-800 transition-all"
+               className="group flex items-center gap-2 px-4 py-2 text-sm font-bold text-slate-400 hover:text-red-400 transition-colors"
             >
-               Wyczyść
+               <span className="text-lg group-hover:rotate-12 transition-transform">🗑️</span>
+               WYCZYŚĆ
             </button>
-         </div>
-
-         {/* 3. Podpis aktualnego koloru */}
-         <div className="flex items-center gap-2 text-sm text-slate-500">
-            Wybrany kolor:{" "}
-            <span className="text-slate-300 font-mono uppercase">
-               {COLORS.find((c) => c.value === currentColor)?.name}
-            </span>
          </div>
       </div>
    );
