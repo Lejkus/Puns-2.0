@@ -17,29 +17,48 @@ function App() {
    const [isHost, setIsHost] = useState(false);
 
    useEffect(() => {
-      if (isAuthenticated) {
-         const newSocket = io("http://localhost:3000");
+      // Łączymy tylko, gdy user jest w pełni załadowany
+      if (isAuthenticated && user?.id) {
+         const newSocket = io("http://localhost:3000", {
+            auth: {
+               userId: user.id, // <--- Przekazujemy ID w autoryzacji
+            },
+         });
 
-         // --- NOWE: Słuchamy co serwer ma do powiedzenia o dołączaniu ---
+         // --- Słuchamy sygnału "force_logout" z serwera ---
+         newSocket.on("force_logout", (data: { reason: string }) => {
+            alert(data.reason); // Pokaż powód
+            logout(); // Wyczyść stan w Zustand
+            window.location.href = "/login"; // Przekieruj mocno na login
+         });
+
          newSocket.on("joinSuccess", (data: { roomId: string }) => {
-            console.log("Sukces! Serwer pozwolił wejść do:", data.roomId);
-            setCurrentRoom(data.roomId); // Dopiero teraz przełączamy widok!
+            setCurrentRoom(data.roomId);
          });
 
          newSocket.on("error_message", (msg: string) => {
-            alert(msg); // Wyświetli np. "Nieprawidłowe hasło!"
-            setCurrentRoom(null); // Zostajemy w Lobby
+            alert(msg);
+            setCurrentRoom(null);
          });
 
          setSocket(newSocket);
 
          return () => {
+            newSocket.off("force_logout");
             newSocket.off("joinSuccess");
             newSocket.off("error_message");
             newSocket.disconnect();
          };
+      } else {
+         // Jeśli użytkownik jest wylogowany, czyścimy socket
+         if (socket) {
+            socket.disconnect();
+            setSocket(null);
+         }
       }
-   }, [isAuthenticated]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [isAuthenticated, user?.id]);
+   // Ważne: user?.id musi być w dependency array!
 
    useEffect(() => {
       if (socket) {
@@ -65,7 +84,6 @@ function App() {
       }
    }, [socket]);
 
-   
    // Funkcja odpalana, gdy gracz kliknie w Lobby
    const handleJoinRoom = (roomId: string, password?: string) => {
       if (!user) return; // Jeśli nie ma usera, nie wpuszczamy

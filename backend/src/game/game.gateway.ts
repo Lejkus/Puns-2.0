@@ -38,11 +38,36 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {}
 
   handleConnection(client: Socket) {
+    // Odczytujemy userId przekazane z frontendu
+    const userId = client.handshake.auth.userId;
+
+    if (userId) {
+      const oldSocketId = this.activeUsers.get(userId);
+
+      // Jeśli user już ma socket i to nie jest ten sam socket (np. nowa karta)
+      if (oldSocketId && oldSocketId !== client.id) {
+        const oldSocket = this.server.sockets.sockets.get(oldSocketId);
+
+        if (oldSocket) {
+          console.log(`Wykopuję starą sesję użytkownika: ${userId}`);
+          // Wysyłamy sygnał do starego urządzenia/karty
+          oldSocket.emit('force_logout', {
+            reason: 'Zalogowano z innego urządzenia. Zostałeś wylogowany.',
+          });
+          // Rozłączamy stary socket po stronie serwera
+          oldSocket.disconnect();
+        }
+      }
+
+      // Zapisujemy nowe połączenie
+      this.activeUsers.set(userId, client.id);
+    }
+
     console.log(`Gracz połączony: ${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
-    // 1. Usuwamy z mapy aktywnych sesji
+    // 1. Usuwamy użytkownika z globalnej mapy sesji
     for (const [userId, socketId] of this.activeUsers.entries()) {
       if (socketId === client.id) {
         this.activeUsers.delete(userId);
@@ -50,7 +75,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
 
-    // 2. Usuwamy gracza z pokoju i ewentualnie przekazujemy Hosta
+    // 2. Twoja obecna logika usuwania z pokojów i przekazywania Hosta
     this.roomPlayers.forEach((players, roomId) => {
       const playerIndex = players.findIndex((p) => p.id === client.id);
       if (playerIndex !== -1) {
@@ -58,18 +83,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         players.splice(playerIndex, 1);
 
         if (players.length > 0) {
-          if (wasHost) {
-            players[0].isHost = true; // Automatyczna migracja korony 👑
-          }
-          this.roomPlayers.set(roomId, players);
+          if (wasHost) players[0].isHost = true;
           this.server.to(roomId).emit('playersUpdate', players);
         } else {
-          // Jeśli pokój jest pusty - czyścimy pamięć
           this.roomPlayers.delete(roomId);
           this.canvasStates.delete(roomId);
         }
       }
     });
+
     console.log(`Gracz rozłączony: ${client.id}`);
   }
 
@@ -168,7 +190,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.emit('canvasInit', currentState);
   }
 
-  
   // --- SILNIK RYSOWANIA ---
   @SubscribeMessage('draw')
   handleDraw(@ConnectedSocket() client: Socket, @MessageBody() data: any) {
