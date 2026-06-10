@@ -1,4 +1,6 @@
 # Puns Game App (2026 Edition)
+<img width="1426" height="783" alt="image" src="https://github.com/user-attachments/assets/4b3678f6-b0ab-4123-9965-15e8c53b7bda" />
+<img width="1426" height="783" alt="image" src="https://github.com/user-attachments/assets/98ace4d2-ed9a-49f8-89c7-1c777631f1fc" />
 
 ## Opis projektu
 
