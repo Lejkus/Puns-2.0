@@ -10,6 +10,7 @@ export interface Player {
   isHost: boolean;
   score: number;
   hasGuessed: boolean;
+  disconnected?: boolean;
 }
 
 export interface GameState {
@@ -45,6 +46,9 @@ export class GameService {
   // Przechowujemy stan gier i aktywne timery
   private games = new Map<string, GameState>();
   private intervals = new Map<string, NodeJS.Timeout>();
+  // Gracz, który się rozłączył (np. F5), ma chwilę na powrót zanim faktycznie go usuniemy
+  private pendingRemovals = new Map<string, NodeJS.Timeout>();
+  private readonly RECONNECT_GRACE_MS = 15000;
 
   // Pobierz stan pokoju (lub stwórz nowy, jeśli nie istnieje)
   getGameState(roomId: string): GameState {
@@ -82,6 +86,80 @@ export class GameService {
       score: 0,
       hasGuessed: false,
     });
+
+    return game;
+  }
+
+  // Gracz się rozłączył (np. odświeżenie strony) - dajemy mu chwilę na powrót zamiast usuwać go od razu
+  markDisconnected(socketId: string, server: Server): void {
+    for (const [roomId, game] of this.games.entries()) {
+      const player = game.players.find((p) => p.id === socketId);
+      if (player) {
+        player.disconnected = true;
+        const key = `${roomId}:${player.userId}`;
+
+        const existing = this.pendingRemovals.get(key);
+        if (existing) clearTimeout(existing);
+
+        const timeout = setTimeout(() => {
+          this.pendingRemovals.delete(key);
+          const currentGame = this.games.get(roomId);
+          if (!currentGame) return;
+
+          const idx = currentGame.players.findIndex(
+            (p) => p.userId === player.userId && p.disconnected,
+          );
+          if (idx === -1) return; // Gracz zdążył wrócić w międzyczasie
+
+          const wasHost = currentGame.players[idx].isHost;
+          currentGame.players.splice(idx, 1);
+
+          if (currentGame.players.length === 0) {
+            if (this.intervals.has(roomId)) {
+              clearInterval(this.intervals.get(roomId)!);
+              this.intervals.delete(roomId);
+            }
+            this.games.delete(roomId);
+          } else {
+            if (wasHost) currentGame.players[0].isHost = true;
+            server.to(roomId).emit('playersUpdate', currentGame.players);
+          }
+        }, this.RECONNECT_GRACE_MS);
+
+        this.pendingRemovals.set(key, timeout);
+        return;
+      }
+    }
+  }
+
+  // Próba wznowienia sesji gracza, który wrócił (np. po F5) zanim upłynął czas karencji
+  reconnectPlayer(
+    roomId: string,
+    userId: string,
+    newSocketId: string,
+  ): GameState | null {
+    const game = this.games.get(roomId);
+    if (!game) return null;
+
+    const player = game.players.find(
+      (p) => p.userId === userId && p.disconnected,
+    );
+    if (!player) return null;
+
+    const key = `${roomId}:${userId}`;
+    const timeout = this.pendingRemovals.get(key);
+    if (timeout) {
+      clearTimeout(timeout);
+      this.pendingRemovals.delete(key);
+    }
+
+    // Jeśli to on był rysownikiem, przekierowujemy referencję na nowy socket
+    if (game.currentDrawerId === player.id) {
+      game.currentDrawerId = newSocketId;
+    }
+
+    player.id = newSocketId;
+    player.disconnected = false;
 
     return game;
   }

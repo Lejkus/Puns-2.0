@@ -37,11 +37,12 @@ export default function GameCanvas({
    const [pixels, setPixels] = useState<Record<number, string>>({});
    const [currentColor, setCurrentColor] = useState("#ef4444");
    const isDrawing = useRef(false);
+   // Ostatni namalowany punkt (w kratkach), żeby móc dorysować linię do nowego - inaczej szybki ruch myszką zostawia dziury
+   const lastPoint = useRef<{ x: number; y: number } | null>(null);
 
-   // Throttling emitów 'draw', żeby szybkie malowanie nie zalewało socketu
+   // Kolejkujemy WSZYSTKIE piksele narysowane między flushami - throttlujemy częstotliwość wysyłki, ale nie tracimy żadnego piksela
    const DRAW_EMIT_THROTTLE_MS = 40;
-   const lastEmitAt = useRef(0);
-   const pendingEmit = useRef<{ index: number; color: string } | null>(null);
+   const drawQueue = useRef<{ index: number; color: string }[]>([]);
    const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
    // 🔥 KLUCZOWA LOGIKA: Czy ja teraz rysuję?
@@ -49,8 +50,12 @@ export default function GameCanvas({
 
    useEffect(() => {
       if (!socket) return;
-      socket.on("drawUpdate", (data: { index: number; color: string }) => {
-         setPixels((prev) => ({ ...prev, [data.index]: data.color }));
+      socket.on("drawUpdate", (data: { index: number; color: string }[]) => {
+         setPixels((prev) => {
+            const next = { ...prev };
+            for (const { index, color } of data) next[index] = color;
+            return next;
+         });
       });
       socket.on("canvasInit", (state: Record<number, string>) => {
          setPixels(state || {});
@@ -59,12 +64,15 @@ export default function GameCanvas({
          setPixels({});
       });
 
+      // Prosimy o aktualny stan płótna dopiero TERAZ, gdy na pewno słuchamy już "canvasInit"
+      socket.emit("requestCanvasState", { roomId });
+
       return () => {
          socket.off("drawUpdate");
          socket.off("canvasInit");
          socket.off("clearCanvas");
       };
-   }, [socket]);
+   }, [socket, roomId]);
 
    useEffect(() => {
       return () => {
@@ -73,26 +81,15 @@ export default function GameCanvas({
    }, []);
 
    const emitDraw = useCallback((index: number, color: string) => {
-      const now = Date.now();
-      const elapsed = now - lastEmitAt.current;
-
-      if (elapsed >= DRAW_EMIT_THROTTLE_MS) {
-         lastEmitAt.current = now;
-         socket?.emit("draw", { index, color });
-         return;
-      }
-
-      // Zbyt wcześnie - zapamiętujemy ostatni piksel i wysyłamy go po chwili
-      pendingEmit.current = { index, color };
+      drawQueue.current.push({ index, color });
       if (!flushTimer.current) {
          flushTimer.current = setTimeout(() => {
             flushTimer.current = null;
-            if (pendingEmit.current) {
-               lastEmitAt.current = Date.now();
-               socket?.emit("draw", pendingEmit.current);
-               pendingEmit.current = null;
+            if (drawQueue.current.length > 0) {
+               socket?.emit("draw", drawQueue.current);
+               drawQueue.current = [];
             }
-         }, DRAW_EMIT_THROTTLE_MS - elapsed);
+         }, DRAW_EMIT_THROTTLE_MS);
       }
    }, [socket]);
 
@@ -107,18 +104,46 @@ export default function GameCanvas({
       }
    }, [emitDraw, canDraw]);
 
+   // Rysuje linię (algorytm Bresenhama) między dwoma punktami siatki, żeby szybki ruch myszką nie zostawiał dziur
+   const paintLine = useCallback((from: { x: number; y: number } | null, to: { x: number; y: number }) => {
+      const inBounds = (x: number, y: number) => x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_WIDTH;
+      const paintCell = (x: number, y: number) => {
+         if (!inBounds(x, y)) return;
+         drawPixel(y * GRID_WIDTH + x, currentColor);
+      };
+
+      if (!from) {
+         paintCell(to.x, to.y);
+         return;
+      }
+
+      let x0 = from.x, y0 = from.y;
+      const x1 = to.x, y1 = to.y;
+      const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+      const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+      let err = dx + dy;
+
+      while (true) {
+         paintCell(x0, y0);
+         if (x0 === x1 && y0 === y1) break;
+         const e2 = 2 * err;
+         if (e2 >= dy) { err += dy; x0 += sx; }
+         if (e2 <= dx) { err += dx; y0 += sy; }
+      }
+   }, [drawPixel, currentColor]);
+
    const handlePaint = (e: any) => {
       // ⛔ BLOKADA: Nie rysujesz, jeśli nie masz uprawnień!
       if (!isDrawing.current || !socket || !canDraw) return;
-      
+
       const stage = e.target.getStage();
       const point = stage.getPointerPosition();
       if (!point) return;
       const gridX = Math.floor(point.x / PIXEL_SIZE);
       const gridY = Math.floor(point.y / PIXEL_SIZE);
       if (gridX >= 0 && gridX < GRID_WIDTH && gridY >= 0 && gridY < GRID_WIDTH) {
-         const index = gridY * GRID_WIDTH + gridX;
-         drawPixel(index, currentColor);
+         paintLine(lastPoint.current, { x: gridX, y: gridY });
+         lastPoint.current = { x: gridX, y: gridY };
       }
    };
 
@@ -174,10 +199,10 @@ export default function GameCanvas({
                   className={`bg-white rounded-lg overflow-hidden shadow-inner ${
                      canDraw ? "cursor-crosshair" : "cursor-not-allowed opacity-90"
                   }`}
-                  onMouseDown={(e) => { isDrawing.current = true; handlePaint(e); }}
+                  onMouseDown={(e) => { isDrawing.current = true; lastPoint.current = null; handlePaint(e); }}
                   onMouseMove={handlePaint}
-                  onMouseUp={() => (isDrawing.current = false)}
-                  onMouseLeave={() => (isDrawing.current = false)}
+                  onMouseUp={() => { isDrawing.current = false; lastPoint.current = null; }}
+                  onMouseLeave={() => { isDrawing.current = false; lastPoint.current = null; }}
                >
                   <Layer>
                      {Object.entries(pixels).map(([indexStr, color]) => {

@@ -51,12 +51,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
 
-    // 2. Oddajemy logikę pokojów do Serwisu
-    const updatedRoomId = this.gameService.removePlayer(client.id);
-    if (updatedRoomId) {
-      const state = this.gameService.getGameState(updatedRoomId);
-      this.server.to(updatedRoomId).emit('playersUpdate', state.players);
-    }
+    // 2. Nie usuwamy gracza od razu - daje mu to szansę na powrót (np. F5) w oknie karencji
+    this.gameService.markDisconnected(client.id, this.server);
   }
 
   @SubscribeMessage('joinRoom')
@@ -70,8 +66,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // Walidacje
     const room = await this.prisma.room.findUnique({ where: { name: roomId } });
     if (!room) return client.emit('error_message', 'Taki pokój nie istnieje!');
-    if (room.status === 'IN_GAME')
-      return client.emit('error_message', 'Gra już trwa!');
 
     const isAuthorized = await this.roomsService.verifyRoomPassword(
       roomId,
@@ -80,12 +74,39 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!isAuthorized)
       return client.emit('error_message', 'Nieprawidłowe hasło!');
 
-    // Blokada klona (teraz pytamy Serwisu)
-    const state = this.gameService.getGameState(roomId);
-    if (state.players.some((p) => p.nickname === nickname)) {
-      return client.emit(
-        'error_message',
-        'Użytkownik o tym nicku już tu jest!',
+    const userId = client.handshake.auth.userId || client.id;
+
+    // Próba wznowienia sesji (np. po F5) - jeśli gracz był w trakcie okna karencji, wracamy bez tworzenia nowego wpisu
+    const reconnectedState = this.gameService.reconnectPlayer(
+      roomId,
+      userId,
+      client.id,
+    );
+
+    let finalState;
+    if (reconnectedState) {
+      finalState = reconnectedState;
+    } else {
+      // Świeży pokój z trwającą grą nie przyjmuje nowych graczy (ale reconnect powyżej - owszem)
+      if (room.status === 'IN_GAME') {
+        return client.emit('error_message', 'Gra już trwa!');
+      }
+
+      // Blokada klona (teraz pytamy Serwisu)
+      const state = this.gameService.getGameState(roomId);
+      if (state.players.some((p) => p.nickname === nickname)) {
+        return client.emit(
+          'error_message',
+          'Użytkownik o tym nicku już tu jest!',
+        );
+      }
+
+      // Dodajemy do Mózgu Gry
+      finalState = this.gameService.addPlayer(
+        roomId,
+        client.id,
+        userId,
+        nickname,
       );
     }
 
@@ -95,24 +116,34 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
     client.join(roomId);
 
-    // Dodajemy do Mózgu Gry
-    const userId = client.handshake.auth.userId || client.id;
-    const newState = this.gameService.addPlayer(
-      roomId,
-      client.id,
-      userId,
-      nickname,
-    );
-
-    this.server.to(roomId).emit('playersUpdate', newState.players);
+    this.server.to(roomId).emit('playersUpdate', finalState.players);
     client.emit('joinSuccess', {
       roomId,
-      isHost: newState.players.find((p) => p.id === client.id)?.isHost,
+      isHost: finalState.players.find((p) => p.id === client.id)?.isHost,
     });
 
     // Płótno
     const currentState = this.canvasStates.get(roomId) || {};
     client.emit('canvasInit', currentState);
+
+    // Jeśli wracamy w trakcie trwającej tury, wznawiamy stan gry tylko dla tego klienta
+    if (finalState.status === 'PLAYING') {
+      client.emit('gameStarted');
+      client.emit('turnStarted', {
+        drawerId: finalState.currentDrawerId,
+        drawerName:
+          finalState.players.find((p) => p.id === finalState.currentDrawerId)
+            ?.nickname || '',
+        timeLeft: finalState.timeLeft,
+        currentRound: finalState.currentRound,
+      });
+      if (
+        finalState.currentDrawerId === client.id &&
+        finalState.currentWord
+      ) {
+        client.emit('yourWord', { word: finalState.currentWord });
+      }
+    }
   }
 
   @SubscribeMessage('startGame')
@@ -208,14 +239,30 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  // Draw i Clear zostają bez zmian
+  // GameCanvas montuje się dopiero PO joinSuccess, więc 'canvasInit' wysłane w handleJoinRoom
+  // czasem dociera zanim ktokolwiek go słucha (i ginie) - dlatego komponent sam o niego prosi po zamontowaniu
+  @SubscribeMessage('requestCanvasState')
+  handleRequestCanvasState(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string },
+  ) {
+    const currentState = this.canvasStates.get(data.roomId) || {};
+    client.emit('canvasInit', currentState);
+  }
+
   @SubscribeMessage('draw')
-  handleDraw(@ConnectedSocket() client: Socket, @MessageBody() data: any) {
+  handleDraw(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { index: number; color: string }[],
+  ) {
     const roomId = Array.from(client.rooms).find((r) => r !== client.id);
     if (roomId) {
       client.broadcast.to(roomId).emit('drawUpdate', data);
       if (!this.canvasStates.has(roomId)) this.canvasStates.set(roomId, {});
-      this.canvasStates.get(roomId)![data.index] = data.color;
+      const state = this.canvasStates.get(roomId)!;
+      for (const { index, color } of data) {
+        state[index] = color;
+      }
     }
   }
 

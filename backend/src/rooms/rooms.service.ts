@@ -21,12 +21,8 @@ export class RoomsService {
     const room = await this.prisma.room.findUnique({ where: { name } });
     
     if (!room) return false;
-  
-    // NOWOŚĆ: Jeśli gra już trwa, nie wpuszczamy nikogo (nawet z dobrym hasłem)
-    if (room.status === "IN_GAME") {
-      return false; // Możesz tu rzucić specyficzny błąd "Gra już trwa"
-    }
-  
+
+    // Blokada "gra już trwa" jest teraz w GameGateway (i pomija graczy wracających po F5) - tu liczy się tylko hasło
     if (!room.password || room.password === "") return true;
     return room.password === password;
   }

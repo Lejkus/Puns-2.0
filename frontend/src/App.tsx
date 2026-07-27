@@ -9,6 +9,9 @@ import Lobby from "./components/Lobby";
 import { useEffect, useState } from "react";
 import { io, Socket } from "socket.io-client";
 
+// Trzymamy pokój w sessionStorage, żeby F5 nie wyrzucał gracza z powrotem do Lobby
+const ROOM_STORAGE_KEY = "puns_active_room";
+
 function App() {
   const { user, isAuthenticated, logout } = useAuthStore();
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -38,13 +41,27 @@ function App() {
       newSocket.on("joinSuccess", (data: { roomId: string; isHost: boolean }) => {
         setCurrentRoom(data.roomId);
         setIsHost(data.isHost);
-        setIsGameStarted(false);
         setWord(null);
       });
 
       newSocket.on("error_message", (msg: string) => {
         alert(msg);
         setCurrentRoom(null);
+        sessionStorage.removeItem(ROOM_STORAGE_KEY);
+      });
+
+      // Po (re)połączeniu - jeśli byliśmy w jakimś pokoju (np. przed F5), próbujemy do niego wrócić
+      newSocket.on("connect", () => {
+        const stored = sessionStorage.getItem(ROOM_STORAGE_KEY);
+        if (!stored) return;
+        try {
+          const { roomId, password } = JSON.parse(stored);
+          if (roomId) {
+            newSocket.emit("joinRoom", { roomId, password, nickname: user.nickname });
+          }
+        } catch {
+          sessionStorage.removeItem(ROOM_STORAGE_KEY);
+        }
       });
 
       setSocket(newSocket);
@@ -92,6 +109,7 @@ function App() {
 
   const handleJoinRoom = (roomId: string, password?: string) => {
     if (!user) return;
+    sessionStorage.setItem(ROOM_STORAGE_KEY, JSON.stringify({ roomId, password: password || "" }));
     socket?.emit("joinRoom", { roomId, password, nickname: user.nickname });
   };
 
@@ -100,6 +118,7 @@ function App() {
     if (currentRoom) {
       socket?.emit("leaveRoom", { roomId: currentRoom });
     }
+    sessionStorage.removeItem(ROOM_STORAGE_KEY);
     setCurrentRoom(null);
     setIsGameStarted(false);
   };
