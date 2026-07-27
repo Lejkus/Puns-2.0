@@ -32,6 +32,6 @@ export class RoomsService {
   }
 
   async getAllRooms() {
-    return this.prisma.room.findMany();
+    return this.prisma.room.findMany({ where: { status: 'LOBBY' } });
   }
 }

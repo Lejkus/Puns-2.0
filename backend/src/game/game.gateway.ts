@@ -10,64 +10,40 @@ import {
 import { Server, Socket } from 'socket.io';
 import { RoomsService } from '../rooms/rooms.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { GameService } from './game.service'; // 🔥 IMPORT SERWISU
 
-interface Player {
-  id: string; // Socket ID
-  userId: string; // ID z bazy danych
-  nickname: string;
-  isHost: boolean;
-}
-
-@WebSocketGateway({
-  cors: { origin: '*' },
-})
+@WebSocketGateway({ cors: { origin: '*' } })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
-  @WebSocketServer()
-  server: Server;
+  @WebSocketServer() server: Server;
 
-  // Mapy w RAMie
-  private canvasStates = new Map<string, Record<number, string>>();
-  private roomPlayers = new Map<string, Player[]>();
-
-  // 🔥 NOWOŚĆ: Śledzenie aktywnych sesji (userId -> socketId)
   private activeUsers = new Map<string, string>();
+  private canvasStates = new Map<string, Record<number, string>>();
 
   constructor(
     private readonly roomsService: RoomsService,
     private readonly prisma: PrismaService,
+    private readonly gameService: GameService, // 🔥 WSTRZYKUJEMY SERWIS
   ) {}
 
   handleConnection(client: Socket) {
-    // Odczytujemy userId przekazane z frontendu
     const userId = client.handshake.auth.userId;
-
     if (userId) {
       const oldSocketId = this.activeUsers.get(userId);
-
-      // Jeśli user już ma socket i to nie jest ten sam socket (np. nowa karta)
       if (oldSocketId && oldSocketId !== client.id) {
         const oldSocket = this.server.sockets.sockets.get(oldSocketId);
-
         if (oldSocket) {
-          console.log(`Wykopuję starą sesję użytkownika: ${userId}`);
-          // Wysyłamy sygnał do starego urządzenia/karty
           oldSocket.emit('force_logout', {
-            reason: 'Zalogowano z innego urządzenia. Zostałeś wylogowany.',
+            reason: 'Zalogowano z innego urządzenia.',
           });
-          // Rozłączamy stary socket po stronie serwera
           oldSocket.disconnect();
         }
       }
-
-      // Zapisujemy nowe połączenie
       this.activeUsers.set(userId, client.id);
     }
-
-    console.log(`Gracz połączony: ${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
-    // 1. Usuwamy użytkownika z globalnej mapy sesji
+    // 1. Usuwamy z aktywnych sesji
     for (const [userId, socketId] of this.activeUsers.entries()) {
       if (socketId === client.id) {
         this.activeUsers.delete(userId);
@@ -75,130 +51,171 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
 
-    // 2. Twoja obecna logika usuwania z pokojów i przekazywania Hosta
-    this.roomPlayers.forEach((players, roomId) => {
-      const playerIndex = players.findIndex((p) => p.id === client.id);
-      if (playerIndex !== -1) {
-        const wasHost = players[playerIndex].isHost;
-        players.splice(playerIndex, 1);
-
-        if (players.length > 0) {
-          if (wasHost) players[0].isHost = true;
-          this.server.to(roomId).emit('playersUpdate', players);
-        } else {
-          this.roomPlayers.delete(roomId);
-          this.canvasStates.delete(roomId);
-        }
-      }
-    });
-
-    console.log(`Gracz rozłączony: ${client.id}`);
-  }
-
-  // --- CZAT (Wrócił na swoje miejsce!) ---
-  @SubscribeMessage('message')
-  handleMessage(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { user: string; text: string },
-  ) {
-    const roomId = Array.from(client.rooms).find((r) => r !== client.id);
-    if (roomId) {
-      this.server.to(roomId).emit('messageUpdate', data);
-      console.log(`[Chat] ${roomId} | ${data.user}: ${data.text}`);
+    // 2. Oddajemy logikę pokojów do Serwisu
+    const updatedRoomId = this.gameService.removePlayer(client.id);
+    if (updatedRoomId) {
+      const state = this.gameService.getGameState(updatedRoomId);
+      this.server.to(updatedRoomId).emit('playersUpdate', state.players);
     }
   }
 
-  // --- DOŁĄCZANIE DO POKOJU ---
   @SubscribeMessage('joinRoom')
   async handleJoinRoom(
     @ConnectedSocket() client: Socket,
     @MessageBody()
-    data: {
-      roomId: string;
-      password?: string;
-      nickname: string;
-      userId: string;
-    },
+    data: { roomId: string; password?: string; nickname: string },
   ) {
-    const { roomId, password, nickname, userId } = data;
+    const { roomId, password, nickname } = data;
 
-    if (!roomId || !userId) {
-      client.emit(
-        'error_message',
-        'Błąd: Dane pokoju i użytkownika są wymagane!',
-      );
-      return;
-    }
-
-    // 1. Sprawdzamy czy gra już nie trwa
+    // Walidacje
     const room = await this.prisma.room.findUnique({ where: { name: roomId } });
-    if (room && room.status === 'IN_GAME') {
-      client.emit('error_message', 'Nie można dołączyć – gra już trwa!');
-      return;
-    }
+    if (!room) return client.emit('error_message', 'Taki pokój nie istnieje!');
+    if (room.status === 'IN_GAME')
+      return client.emit('error_message', 'Gra już trwa!');
 
-    // 2. Walidacja hasła
     const isAuthorized = await this.roomsService.verifyRoomPassword(
       roomId,
       password,
     );
-    if (!isAuthorized) {
-      client.emit('error_message', 'Nieprawidłowe hasło do pokoju!');
-      return;
+    if (!isAuthorized)
+      return client.emit('error_message', 'Nieprawidłowe hasło!');
+
+    // Blokada klona (teraz pytamy Serwisu)
+    const state = this.gameService.getGameState(roomId);
+    if (state.players.some((p) => p.nickname === nickname)) {
+      return client.emit(
+        'error_message',
+        'Użytkownik o tym nicku już tu jest!',
+      );
     }
 
-    // 3. 🔥 LOGIKA PROFESJONALNA: Kick starej sesji
-    const oldSocketId = this.activeUsers.get(userId);
-    if (oldSocketId && oldSocketId !== client.id) {
-      const oldSocket = this.server.sockets.sockets.get(oldSocketId);
-      if (oldSocket) {
-        // 🔥 Wysyłamy sygnał do całkowitego wylogowania frontendu
-        oldSocket.emit('force_logout', {
-          reason: 'Zalogowano się na innym urządzeniu.',
-        });
-        oldSocket.disconnect();
-      }
-    }
-    this.activeUsers.set(userId, client.id);
-
-    // 4. Izolacja pokoju
+    // Dołączamy
     Array.from(client.rooms).forEach((r) => {
       if (r !== client.id) client.leave(r);
     });
     client.join(roomId);
 
-    // 5. Zarządzanie listą graczy
-    let players = this.roomPlayers.get(roomId) || [];
-    const isHost = players.length === 0;
+    // Dodajemy do Mózgu Gry
+    const userId = client.handshake.auth.userId || client.id;
+    const newState = this.gameService.addPlayer(
+      roomId,
+      client.id,
+      userId,
+      nickname,
+    );
 
-    const newPlayer: Player = {
-      id: client.id,
-      userId: userId,
-      nickname: nickname || 'Anonim',
-      isHost,
-    };
+    this.server.to(roomId).emit('playersUpdate', newState.players);
+    client.emit('joinSuccess', {
+      roomId,
+      isHost: newState.players.find((p) => p.id === client.id)?.isHost,
+    });
 
-    players.push(newPlayer);
-    this.roomPlayers.set(roomId, players);
-
-    // 6. Sync z resztą graczy
-    this.server.to(roomId).emit('playersUpdate', players);
-    client.emit('joinSuccess', { roomId, isHost });
-
-    // Wysłanie aktualnego stanu rysunku
+    // Płótno
     const currentState = this.canvasStates.get(roomId) || {};
     client.emit('canvasInit', currentState);
   }
 
-  // --- SILNIK RYSOWANIA ---
+  @SubscribeMessage('startGame')
+  async handleStartGame(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string },
+  ) {
+    const state = this.gameService.getGameState(data.roomId);
+    const requester = state.players.find((p) => p.id === client.id);
+    if (!requester?.isHost) {
+      return client.emit('error_message', 'Tylko host może rozpocząć grę!');
+    }
+
+    await this.prisma.room.update({
+      where: { name: data.roomId },
+      data: { status: 'IN_GAME' },
+    });
+
+    // Przełączamy widok na froncie
+    this.server.to(data.roomId).emit('gameStarted');
+
+    // 🔥 ODPALAMY MÓZG GRY!
+    this.gameService.startGame(data.roomId, this.server);
+  }
+
+  @SubscribeMessage('message')
+  handleMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { user: string; text: string },
+  ) {
+    // 1. Znajdujemy pokój
+    const roomId = Array.from(client.rooms).find((r) => r !== client.id);
+    if (!roomId) return;
+
+    const state = this.gameService.getGameState(roomId);
+    if (!state) return;
+
+    // 2. BLOKADA DLA RYSOWNIKA: Nie pozwalamy mu pisać, gdy gra trwa i to jego tura
+    if (state.status === 'PLAYING' && state.currentDrawerId === client.id) {
+      return;
+    }
+
+    // 3. Pytamy Mózg Gry, czy to zgadnięcie hasła
+    const isCorrectGuess = this.gameService.checkGuess(
+      roomId,
+      client.id,
+      data.text,
+      this.server,
+    );
+
+    if (isCorrectGuess) {
+      // 4. KTOŚ ZGADŁ!
+      this.server.to(roomId).emit('messageUpdate', {
+        user: 'SYSTEM',
+        text: `🟢 ${data.user} odgadł hasło!`,
+        isSystem: true, // Dodajemy flagę, żeby łatwiej było stylować na froncie
+      });
+
+      // 5. Aktualizujemy listę graczy (nowe punkty i ikonki zgadnięcia)
+      this.server.to(roomId).emit('playersUpdate', state.players);
+    } else {
+      // 7. Zwykła wiadomość (tylko jeśli gra nie trwa LUB nikt nie zgadł)
+      this.server.to(roomId).emit('messageUpdate', data);
+    }
+  }
+
+  @SubscribeMessage('leaveRoom')
+  handleLeaveRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string },
+  ) {
+    // 1. Najpierw pobieramy nick gracza (ZANIM go usuniemy)
+    const state = this.gameService.getGameState(data.roomId);
+    const player = state?.players.find((p) => p.id === client.id);
+
+    // 2. Usuwamy go
+    client.leave(data.roomId);
+    const updatedRoomId = this.gameService.removePlayer(client.id);
+
+    // 3. Wysyłamy wiadomość na czat
+    if (player) {
+      // Zmieniono receiveMessage -> messageUpdate i sender -> user, aby pasowało do reszty
+      this.server.to(data.roomId).emit('messageUpdate', {
+        user: 'SYSTEM',
+        text: `🛑 ${player.nickname} opuścił(a) grę.`,
+        isSystem: true,
+      });
+    }
+
+    if (updatedRoomId) {
+      const newState = this.gameService.getGameState(updatedRoomId);
+      this.server.to(updatedRoomId).emit('playersUpdate', newState.players);
+    }
+  }
+
+  // Draw i Clear zostają bez zmian
   @SubscribeMessage('draw')
   handleDraw(@ConnectedSocket() client: Socket, @MessageBody() data: any) {
     const roomId = Array.from(client.rooms).find((r) => r !== client.id);
     if (roomId) {
       client.broadcast.to(roomId).emit('drawUpdate', data);
       if (!this.canvasStates.has(roomId)) this.canvasStates.set(roomId, {});
-      const state = this.canvasStates.get(roomId);
-      if (state) state[data.index] = data.color;
+      this.canvasStates.get(roomId)![data.index] = data.color;
     }
   }
 
@@ -209,15 +226,5 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.server.to(roomId).emit('clearCanvas');
       this.canvasStates.set(roomId, {});
     }
-  }
-
-  // --- START GRY ---
-  @SubscribeMessage('startGame')
-  async handleStartGame(@MessageBody() data: { roomId: string }) {
-    await this.prisma.room.update({
-      where: { name: data.roomId },
-      data: { status: 'IN_GAME' },
-    });
-    this.server.to(data.roomId).emit('gameStarted');
   }
 }

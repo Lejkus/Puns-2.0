@@ -7,7 +7,7 @@ interface Message {
 }
 
 // Przyjmujemy socket, username i aktualny roomId jako propsy
-export default function Chat({ socket, username, roomId }: { socket: Socket | null, username: string, roomId: string }) {
+export default function Chat({ socket, username, roomId, disabled }: { socket: Socket | null, username: string, roomId: string, disabled: boolean }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -29,7 +29,7 @@ export default function Chat({ socket, username, roomId }: { socket: Socket | nu
 
   const sendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (input.trim() && socket && roomId) {
+    if (input.trim() && socket && roomId && !disabled) {
       // WYSYŁAMY: do kogo, co i w jakim pokoju
       socket.emit('message', { user: username, text: input, roomId: roomId });
       setInput('');
