@@ -4,6 +4,7 @@ import { Socket } from 'socket.io-client';
 interface Message {
   user: string;
   text: string;
+  isSystem?: boolean;
 }
 
 // Przyjmujemy socket, username i aktualny roomId jako propsy
@@ -42,12 +43,28 @@ export default function Chat({ socket, username, roomId, disabled }: { socket: S
         <h3 className="font-bold text-white tracking-wider text-sm uppercase">Czat pokoju: {roomId}</h3>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-2">
-        {messages.map((m, i) => (
-          <div key={i} className="text-sm">
-            <span className="font-bold text-indigo-400">{m.user}: </span>
-            <span className="text-slate-200">{m.text}</span>
-          </div>
-        ))}
+        {messages.map((m, i) => {
+          if (m.isSystem) {
+            const isSuccess = m.text.includes('🟢');
+            const isLeave = m.text.includes('🛑');
+            const color = isSuccess
+              ? 'text-emerald-400'
+              : isLeave
+              ? 'text-red-400'
+              : 'text-amber-400';
+            return (
+              <div key={i} className={`text-xs italic text-center ${color}`}>
+                {m.text}
+              </div>
+            );
+          }
+          return (
+            <div key={i} className="text-sm">
+              <span className="font-bold text-indigo-400">{m.user}: </span>
+              <span className="text-slate-200">{m.text}</span>
+            </div>
+          );
+        })}
         <div ref={chatEndRef} />
       </div>
       <form onSubmit={sendMessage} className="p-3 bg-slate-800 flex gap-2 border-t border-slate-700">

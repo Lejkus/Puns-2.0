@@ -111,18 +111,14 @@ export class GameService {
           );
           if (idx === -1) return; // Gracz zdążył wrócić w międzyczasie
 
-          const wasHost = currentGame.players[idx].isHost;
-          currentGame.players.splice(idx, 1);
-
-          if (currentGame.players.length === 0) {
-            if (this.intervals.has(roomId)) {
-              clearInterval(this.intervals.get(roomId)!);
-              this.intervals.delete(roomId);
+          // Deleguje do removePlayer, żeby obsłużyć m.in. przypadek rysownika, który nie wraca (zamiast duplikować tę logikę)
+          const leavingSocketId = currentGame.players[idx].id;
+          const updatedRoomId = this.removePlayer(leavingSocketId, server);
+          if (updatedRoomId) {
+            const newState = this.games.get(updatedRoomId);
+            if (newState) {
+              server.to(updatedRoomId).emit('playersUpdate', newState.players);
             }
-            this.games.delete(roomId);
-          } else {
-            if (wasHost) currentGame.players[0].isHost = true;
-            server.to(roomId).emit('playersUpdate', currentGame.players);
           }
         }, this.RECONNECT_GRACE_MS);
 
@@ -165,15 +161,41 @@ export class GameService {
   }
 
   // Usuń gracza i przenieś Hosta
-  removePlayer(socketId: string): string | null {
+  removePlayer(socketId: string, server: Server): string | null {
     for (const [roomId, game] of this.games.entries()) {
       const index = game.players.findIndex((p) => p.id === socketId);
       if (index !== -1) {
         const wasHost = game.players[index].isHost;
+        const wasDrawer =
+          game.status === 'PLAYING' && game.currentDrawerId === socketId;
+
         game.players.splice(index, 1);
+
+        // Gracz przed aktualnym rysownikiem w kolejce wypadł - przesuwamy wskaźnik, żeby kolejka się nie rozjechała
+        if (index < game.drawerIndex) {
+          game.drawerIndex -= 1;
+        }
 
         if (game.players.length > 0) {
           if (wasHost) game.players[0].isHost = true;
+
+          // Rysownik wyszedł na stałe w trakcie swojej tury - bez tego gra wisiałaby z martwym currentDrawerId do końca timera
+          if (wasDrawer) {
+            if (this.intervals.has(roomId)) {
+              clearInterval(this.intervals.get(roomId)!);
+              this.intervals.delete(roomId);
+            }
+            server.to(roomId).emit('messageUpdate', {
+              user: 'SYSTEM',
+              text: `🛑 Rysownik opuścił grę. Hasło to było: ${game.currentWord}`,
+              isSystem: true,
+            });
+            game.currentDrawerId = null;
+            game.currentWord = null;
+            // Uwaga: drawerIndex NIE jest tu inkrementowany - po splice() już wskazuje na kolejnego gracza w kolejce
+            this.proceedToNextTurn(roomId, server, 3000);
+          }
+
           return roomId; // Zwracamy pokój, żeby Gateway mógł odświeżyć listę
         } else {
           // Pokój pusty - sprzątamy pamięć i timery!
@@ -244,7 +266,8 @@ export class GameService {
           .to(roomId)
           .emit('messageUpdate', {
             user: 'SYSTEM',
-            text: `Czas minął! Hasło to: ${game.currentWord}`,
+            text: `⏰ Czas minął! Hasło to: ${game.currentWord}`,
+            isSystem: true,
           });
         this.endTurn(roomId, server);
       }
@@ -260,6 +283,16 @@ export class GameService {
     // Przesuwamy kolejkę na następną osobę
     game.drawerIndex += 1;
 
+    this.proceedToNextTurn(roomId, server, 5000);
+  }
+
+  // Wspólna logika "co dalej po turze": nowa runda / koniec gry / start kolejnej tury.
+  // Używana zarówno po normalnym zakończeniu tury, jak i po nagłym wyjściu rysownika (gdzie drawerIndex
+  // jest już poprawny po splice() i NIE powinien być ponownie inkrementowany).
+  private proceedToNextTurn(roomId: string, server: Server, delayMs: number) {
+    const game = this.games.get(roomId);
+    if (!game || game.players.length === 0) return;
+
     // Jeśli wszyscy już rysowali, przechodzimy do nowej rundy lub kończymy grę
     if (game.drawerIndex >= game.players.length) {
       game.drawerIndex = 0;
@@ -271,10 +304,10 @@ export class GameService {
       }
     }
 
-    // Odpalamy następną turę po 5 sekundach przerwy
+    // Odpalamy następną turę po krótkiej przerwie
     setTimeout(() => {
       this.startTurn(roomId, server);
-    }, 5000);
+    }, delayMs);
   }
 
   private finishGame(roomId: string, server: Server) {

@@ -221,7 +221,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // 2. Usuwamy go
     client.leave(data.roomId);
-    const updatedRoomId = this.gameService.removePlayer(client.id);
+    const updatedRoomId = this.gameService.removePlayer(client.id, this.server);
 
     // 3. Wysyłamy wiadomość na czat
     if (player) {
